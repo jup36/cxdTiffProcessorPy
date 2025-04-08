@@ -76,11 +76,12 @@ class CxdBatchProcessor:
                 # Green channel (take 0, 2, 8, 10...)
                 if i < num_frames:
                     green_frame_1 = reader.read(c=0, z=0, t=i // 2)
-                    green_stack.append(np.rot90(green_frame_1))
+                    # Rotate by 90 degrees, then flip left to right
+                    green_stack.append(np.fliplr(np.rot90(green_frame_1)))
                 if i+2 < num_frames:
                     green_frame_2 = reader.read(c=0, z=0, t=(i+2) // 2)
-                    green_stack.append(np.rot90(green_frame_2))
-    
+                    # Rotate by 90 degrees, then flip left to right
+                    green_stack.append(np.fliplr(np.rot90(green_frame_2)))
                 # Red channel (take 5, 7, 13, 15...)
                 if i+5 < num_frames:
                     red_frame_1 = reader.read(c=1, z=0, t=(i+5) // 2)
@@ -201,13 +202,14 @@ class CxdBatchProcessor:
         plt.colorbar()
         plt.show()
 
-    def batch_move_files_to_targetDir(self, source_directory=None, target_directory=None):
+    def batch_copy_files_to_targetDir(self, source_directory=None, target_directory=None, overwriteLogic=False):
         """
-        Copy the entire '_green' and '_red' folders containing converted ome.tiff files from the source directories to the target directory.
+        Copy the entire '_green' and '_red' folders from the source directories to the target directory.
         
         Parameters:
         source_directory (str or list): The source directory or list of directories containing '_green' or '_red' subfolders.
         target_directory (str): The single target directory where the OME-TIFF files will be copied.
+        overwriteLogic (bool): If True, overwrite the existing folder in the target directory. If False, skip copying if the folder exists.
         """
         if target_directory is None:
             print("Target directory is not provided.")
@@ -258,11 +260,103 @@ class CxdBatchProcessor:
 
                         # Get the full path of the folder containing the OME-TIFF files (either green or red)
                         source_folder_to_copy = os.path.join(root, dir_name)
-                        print(f"Found matching subdirectory: {name_matching_dir}")
+                        target_folder = os.path.join(name_matching_dir, dir_name)  # Full path to target folder
+
+                        # Check if target folder already exists
+                        if os.path.exists(target_folder):
+                            if overwriteLogic:
+                                print(f"Target folder {target_folder} already exists. Overwriting due to overwriteLogic=True.")
+                                shutil.rmtree(target_folder)  # Remove existing folder if overwrite is True
+                            else:
+                                print(f"Target folder {target_folder} already exists. Skipping due to overwriteLogic=False.")
+                                continue  # Skip if overwriteLogic is False
 
                         # Copy the entire '_green' or '_red' folder to the target folder
                         self._copy_folder_with_progress(source_folder_to_copy, name_matching_dir)
 
+    def batch_copy_files_to_targetDir_cxdOnly(self, source_directory=None, target_directory=None, overwriteLogic=False):
+        """
+        Copy only '.cxd' and '.cxs' files from the source directories to the target directory.
+
+        Parameters:
+        source_directory (str or list): The source directory or list of directories containing '.cxd' or '.cxs' files.
+        target_directory (str): The single target directory where the files will be copied.
+        overwriteLogic (bool): If True, overwrite the existing files in the target directory. If False, skip existing ones.
+        """
+        if target_directory is None:
+            print("Target directory is not provided.")
+            return
+
+        # Validate target directory exists
+        if not os.path.isdir(target_directory):
+            print(f"Target directory does not exist: {target_directory}")
+            return
+
+        # Convert source_directory to list if it is a string or None
+        if isinstance(source_directory, str):
+            source_directories = [source_directory]
+        elif isinstance(source_directory, list):
+            source_directories = source_directory
+        else:
+            source_directories = [self.root_directory]  # Default to the root directory
+
+        for src_dir in source_directories:
+            if not os.path.isdir(src_dir):
+                print(f"Source directory does not exist: {src_dir}")
+                continue
+
+            # Extract header like 'm1049' from the source directory path
+            match_header = re.search(r'm\d{1,4}', src_dir.lower())
+            if not match_header:
+                print(f"Could not extract header from source directory: {src_dir}")
+                continue
+            header_prefix = match_header.group(0)
+            
+            for root, dirs, files in os.walk(src_dir):
+                # Filter only .cxd and .cxs files
+                relevant_files = [f for f in files if f.lower().endswith('.cxd') or f.lower().endswith('.cxs')]
+                if not relevant_files:
+                    continue  # Skip folders without .cxd or .cxs files
+
+                # Extract 6-digit date from folder name
+                match = re.search(r'\d{6}', os.path.basename(root))
+                if not match:
+                    print(f"No 6-digit date found in folder name: {root}")
+                    continue
+
+                date_code = match.group(0)
+
+                # Find or create the target subdirectory for this date
+                target_subdir = self.find_target_subdir_by_date(target_directory, date_code)        
+        if not target_subdir:        
+            target_subdir = os.path.join(target_directory, f"{header_prefix}_{date_code}"        )
+            os.makedirs(target_subdir, exist_ok=Tru        e)
+            print(f"Created new target subdirectory: {target_subdir}")
+
+                # Try to find a name-matching subdirectory
+                name_matching_dir = self._find_matching_subdir(target_subdir, os.path.basename(root))
+                if name_matching_dir is None:
+                    # If not found, create it
+                    name_matching_dir = os.path.join(target_subdir, os.path.basename(root))
+                    os.makedirs(name_matching_dir, exist_ok=True)
+                    print(f"Created new name-matching directory: {name_matching_dir}")
+
+                # Copy each .cxd or .cxs file
+                for file_name in relevant_files:
+                    source_file = os.path.join(root, file_name)
+                    target_file = os.path.join(name_matching_dir, file_name)
+
+                    if os.path.exists(target_file):
+                        if overwriteLogic:
+                            print(f"Overwriting existing file: {target_file}")
+                            shutil.copy2(source_file, target_file)
+                        else:
+                            print(f"File already exists, skipping: {target_file}")
+                    else:
+                        print(f"Copying {source_file} → {target_file}")
+                        shutil.copy2(source_file, target_file)
+
+    
     def find_target_subdir_by_date(self, target_directory, date_code):
         """
         Search for a subdirectory that contains the given date_code.
@@ -318,6 +412,7 @@ class CxdBatchProcessor:
 
 '''
 Example usage (file conversion):
+    conda activate img (on PNI-235KK28V3)
     from cxd_processor import CxdBatchProcessor
     # Initialize the batch processor with the root directory
     processor = CxdBatchProcessor("F:/Imaging/m1237", skipIrrelevantFrames=True, reConversionLogic=True)
@@ -327,7 +422,13 @@ Example usage (file conversion):
     processor.batch_process_all_cxd_in_directory(provided_directory="F:/Imaging/m1237/subfolder")
     # To process a list of specific directories
     processor.batch_process_all_cxd_in_directory(provided_directory=["F:/Imaging/m1237/folder1", "F:/Imaging/m1237/folder2"])
-Example usage (copy files to the target directory):
+Example usage (copy files to the target directory with the same subdirectory structure):
+    from cxd_processor import CxdBatchProcessor
     processor = CxdBatchProcessor("F:/Imaging/m1237", skipIrrelevantFrames=True, reConversionLogic=True)
-    processor.batch_move_files_to_targetDir(source_directory="F:/Imaging/m1237", target_directory="Z:/Rodent Data/dualImaging_parkj/m1237_GCAMP")
+    processor.batch_copy_files_to_targetDir(source_directory="F:/Imaging/m1237", target_directory="Z:/Rodent Data/dualImaging_parkj/m1237_GCAMP", overwriteLogic=False)
+    processor.batch_copy_files_to_targetDir(source_directory="F:\Imaging\m1237\m1237_100224_task_day4_img", target_directory="Z:/Rodent Data/dualImaging_parkj/m1237_GCAMP", overwriteLogic=False)
+Example usage (copy cxd and cxs files to the target directory with the same subdirectory structure or an empty target directory):
+    from cxd_processor import CxdBatchProcessor
+    processor = CxdBatchProcessor("D:\Imaging\m1049", skipIrrelevantFrames=True, reConversionLogic=True)
+    processor.batch_copy_files_to_targetDir_cxdOnly(source_directory="D:\Imaging\m1049", target_directory="E:\Imaging\m1049", overwriteLogic=False)
 '''
